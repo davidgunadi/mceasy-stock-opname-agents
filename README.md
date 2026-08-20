@@ -1,4 +1,4 @@
-# [Your Team Name] Claude Agents
+# McEasy Stock Opname Claude Agents
 
 **Version:** 2.0.0 — see [CHANGELOG.md](CHANGELOG.md)
 
