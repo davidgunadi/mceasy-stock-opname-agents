@@ -6,6 +6,53 @@ Claude Code agents and skills that automate McEasy's stock reconciliation workfl
 
 ---
 
+## Background
+
+### The problem
+
+McEasy's ERP tracks stock through a **"Stock Quant"** export — a historical
+ledger, not a snapshot. The same item (by lot/serial number) legitimately
+appears on many rows as it moves through its lifecycle: Vendor → Customer →
+Refurbishment → Teknisi → Warehouse, usually leaving zero-quantity "ghost"
+rows behind at each stop. Before you can trust what the ERP says is on-hand,
+you first have to catch data-quality issues in that ledger: duplicate
+bookings, wrong owners, malformed IMEIs, missing serials.
+
+Once the ERP data is clean, the real question is: **does the ERP match
+physical reality?** A "Stock Opname" is a physical count — someone walks the
+warehouse (or a technician's own stock) and counts what's actually there.
+This repo automates comparing that physical count against the cleaned ERP
+data and reports where they disagree.
+
+### Two reconciliation modes
+
+| | `/stock-opname` | `/stock-opname-teknisi` |
+|---|---|---|
+| Physical count is done by | Warehouse staff, per city | Field technicians, individually |
+| Scope | On-hand stock only (`<City>/Stock`) | Full ledger — includes stock currently checked out to a customer or technician |
+| Special handling | Excludes ERP "duplicate line" phantom bookings | Uses stock movement history + WebSMS device records to explain apparent mismatches (e.g. a technician installed a unit at a customer's site the same day) |
+| Output | Summary / Product Summary / IMEI Mismatch | Detail IMEI / Detail Non-IMEI / Summary by Technician |
+
+### Key terms
+
+- **Stock Quant** — the raw ERP export of every stock lot/serial and where it
+  currently sits.
+- **IMEI / Lot-Serial Number** — a device's unique serial; used to track
+  individually serialized items across locations.
+- **Non-IMEI** — items counted by quantity only (not individually
+  serialized).
+- **Abnormality** — a data-quality flag added by `clean_stock_quant.py`
+  (duplicate line, special character, IMEI length mismatch, alphanumeric
+  IMEI, negative qty, owner mismatch, missing IMEI) — see the script's
+  docstring for exact rules.
+- **Teknisi** — Indonesian for "technician"; stock checked out to a field
+  technician is tracked separately from warehouse stock.
+- **WebSMS override** — a separate source of truth (device management
+  system) used to confirm a unit is genuinely installed at a customer,
+  overriding an otherwise-flagged mismatch.
+
+---
+
 ## Prerequisites
 
 Must Have:
