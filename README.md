@@ -1,4 +1,4 @@
-# McEasy Stock Opname Claude Agents Test
+# McEasy Stock Opname Claude Agents Test Vincent
 
 **Version:** 2.0.0 — see [CHANGELOG.md](CHANGELOG.md)
 
