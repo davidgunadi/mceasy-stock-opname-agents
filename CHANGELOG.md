@@ -7,6 +7,34 @@ and versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [2.0.1] - 2026-08-26
+
+### Changed
+
+- `scripts/compare_stock_opname.py`: the ERP-exclusion rule used by
+  `@stock-opname-comparator` now excludes any ERP row carrying **any**
+  non-empty `Abnormality` flag (Owner Mismatch, Negative Qty, Imei Length
+  Difference, Alphanumeric IMEI, Has Special Character, Missing Imei, ERP
+  Duplicate line) from both the IMEI-lot match and the non-IMEI qty sum —
+  previously only `ERP Duplicate line` rows were excluded, and only from the
+  IMEI-lot match. Confirmed against real SBY 260826 data: a Negative
+  Qty/Owner Mismatch line (owned by a courier company, not the warehouse) was
+  inflating the non-IMEI qty comparison for one product into a false ~41.3M
+  IDR discrepancy that vanished once flagged rows were excluded.
+
+### Fixed
+
+- `scripts/compare_stock_opname.py`: product-name matching against the
+  masterfile whitelist is now case-insensitive (`build_product_lookup`).
+  Previously an exact, case-sensitive match silently dropped any ERP or
+  physical row whose product name differed only in casing from the
+  masterfile out of scope entirely, reporting it as ERP/physical qty 0
+  instead of comparing it. Confirmed against real SBY 260826 data: the ERP
+  export's `FUSE 2A` vs the masterfile's `Fuse 2A` produced a false -26,000
+  IDR discrepancy (reported as ERP qty 0 vs physical 13) even though the row
+  had no Abnormality flag and its actual quantity matched the physical count
+  exactly.
+
 ## [2.0.0] - 2026-08-20
 
 ### Removed

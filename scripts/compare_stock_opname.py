@@ -21,13 +21,22 @@ city against a physical Stock Opname count for the same city/date, and produces 
 
 ## Key design decisions (locked in with the business owner on 2026-08-11)
 
-1. ERP "on-hand" rows that are flagged `ERP Duplicate line` by clean_stock_quant.py
-   are EXCLUDED from the ERP side of the IMEI match. Rationale, confirmed against
-   real SBY 260730 data: these are lines where the same lot has Quantity > 0 in two
-   places at once (e.g. still shown in `SBY/Stock` *and* already in
-   `Partners/Customers`) — a physical count independently confirms these are phantom
-   ERP bookings (the physical count finds 0 of them), so counting them as "on hand"
-   would make the ERP-vs-physical mismatch look artificially large.
+1. ERP "on-hand" rows that carry ANY (non-empty) Abnormality flag from
+   clean_stock_quant.py are EXCLUDED from BOTH the IMEI-lot match and the
+   non-IMEI qty sum. This was `ERP Duplicate line` only through 2.0.0; broadened
+   to every flag type on 2026-08-26 after SBY 260826 data showed the narrower
+   rule let other abnormalities distort results: a `Negative Qty` + `Owner
+   Mismatch` line (qty -40, owner tagged to a courier company, not the
+   warehouse) inflated the non-IMEI qty comparison for ULTRASONIC FUEL SENSOR
+   THINKSONIC TUB01 into a -39 unit / -41.3M IDR "discrepancy" that vanished
+   once that line and one other Owner-Mismatch line were excluded — the
+   remaining clean ERP qty (3) matched the physical count (3) exactly. Three
+   ERP-only IMEIs in that same run were likewise all already flagged
+   (Owner Mismatch and/or Imei Length Difference/Alphanumeric IMEI). Original
+   `ERP Duplicate line` rationale still holds as a subset: these are lines
+   where the same lot has Quantity > 0 in two places at once (e.g. still shown
+   in `SBY/Stock` *and* already in `Partners/Customers`) — a physical count
+   independently confirms these are phantom ERP bookings.
 2. IMEI matching is done by **Lot/Serial Number alone** (not Product+Lot), so a unit
    that ended up recorded under a different product name on one side still counts as
    a match — but gets flagged as "Product Mismatch" rather than silently ignored.
@@ -37,6 +46,14 @@ city against a physical Stock Opname count for the same city/date, and produces 
      b. Product-count-based, IMEI-tracked products only: how many IMEI-tracked
         products have ALL their IMEIs matched ("cocok") vs at least one mismatch
         ("tidak cocok").
+4. Product-name matching against the masterfile whitelist is CASE-INSENSITIVE
+   (`build_product_lookup`) — confirmed against real SBY 260826 data where the
+   ERP export had `FUSE 2A` (all caps) against the masterfile's `Fuse 2A`.
+   Case-sensitive matching silently dropped that row out of scope entirely
+   (treated as ERP qty 0 rather than compared), producing a false discrepancy
+   even though the row itself had no Abnormality flag and its qty actually
+   matched the physical count. Every ERP/physical row is normalized to the
+   masterfile's canonical casing before the whitelist check.
 """
 
 import argparse
@@ -97,46 +114,70 @@ def load_masterfile(path):
     return master
 
 
-def load_cleaned_erp(path, city, whitelist):
+def build_product_lookup(whitelist):
+    """Case-insensitive product-name lookup: lowercased name -> canonical
+    (masterfile) casing. ERP exports and the physical Opname workbook have
+    both been seen to drift in casing from the masterfile (e.g. 'FUSE 2A' in
+    the ERP vs 'Fuse 2A' in the masterfile) — matched case-sensitively, that
+    silently drops the row out of scope entirely rather than comparing it, so
+    every row is normalized to the masterfile's casing before the whitelist
+    check runs."""
+    return {p.strip().lower(): p for p in whitelist}
+
+
+def load_cleaned_erp(path, city, product_lookup):
     """Returns:
-      erp_lot_rows: lot -> ERP row dict (qty>0, NOT flagged ERP Duplicate line)
-      qty_by_product: product -> sum(Quantity) across all scoped rows (raw, used for non-IMEI products)
-      dup_excluded_count: how many rows were excluded due to ERP Duplicate line
+      erp_lot_rows: lot -> ERP row dict (qty>0, NOT flagged with any Abnormality)
+      qty_by_product: product -> sum(Quantity) across all scoped, non-flagged rows
+                       (used for non-IMEI products)
+      abnormality_excluded_count: how many rows were excluded due to having any
+                       (non-empty) Abnormality flag
     """
     location = f"{city}/Stock"
     with open(path, encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
-    scoped = [r for r in rows if r["Location"] == location and r["Product"] in whitelist]
+    scoped = []
+    for r in rows:
+        if r["Location"] != location:
+            continue
+        canonical = product_lookup.get(r["Product"].strip().lower())
+        if canonical is None:
+            continue
+        r["Product"] = canonical
+        scoped.append(r)
 
     erp_lot_rows = {}
     qty_by_product = defaultdict(float)
     lot_tracked_products = set()  # products that have >=1 lot-bearing row, REGARDLESS of exclusion
-    dup_excluded_count = 0
+    abnormality_excluded_count = 0
     for r in scoped:
+        lot = r["Lot/Serial Number"].strip()
+        if lot:
+            lot_tracked_products.add(r["Product"])
+        if r["Abnormality"]:
+            abnormality_excluded_count += 1
+            continue
         try:
             qty = float(r["Quantity"])
         except ValueError:
             qty = 0.0
         qty_by_product[r["Product"]] += qty
-        lot = r["Lot/Serial Number"].strip()
-        if lot:
-            lot_tracked_products.add(r["Product"])
         if lot and qty > 0:
-            if "ERP Duplicate line" in r["Abnormality"]:
-                dup_excluded_count += 1
-                continue
             erp_lot_rows[lot] = r
 
-    return erp_lot_rows, qty_by_product, dup_excluded_count, lot_tracked_products
+    return erp_lot_rows, qty_by_product, abnormality_excluded_count, lot_tracked_products
 
 
-def load_physical_imei(wb, sheet_name, whitelist):
+def load_physical_imei(wb, sheet_name, product_lookup):
     ws = wb[sheet_name]
     physical_lot_rows = {}
     scan_counts = Counter()
     for row in ws.iter_rows(min_row=2, values_only=True):
         product, sku, lokasi, box_ke, lot, nomor_box = (tuple(row) + (None,) * 6)[:6]
-        if product is None or product not in whitelist:
+        if product is None:
+            continue
+        product = product_lookup.get(str(product).strip().lower())
+        if product is None:
             continue
         if lot is None or str(lot).strip() == "":
             continue
@@ -150,12 +191,15 @@ def load_physical_imei(wb, sheet_name, whitelist):
     return physical_lot_rows, duplicate_scans
 
 
-def load_physical_non_imei(wb, sheet_name, whitelist):
+def load_physical_non_imei(wb, sheet_name, product_lookup):
     ws = wb[sheet_name]
     qty_by_product = defaultdict(float)
     for row in ws.iter_rows(min_row=2, values_only=True):
         product, sku, lokasi, box_ke, qty, nomor_box = (tuple(row) + (None,) * 6)[:6]
-        if product is None or product not in whitelist:
+        if product is None:
+            continue
+        product = product_lookup.get(str(product).strip().lower())
+        if product is None:
             continue
         try:
             qty_by_product[product] += float(qty or 0)
@@ -309,8 +353,9 @@ def main():
 
     master = load_masterfile(args.masterfile_xlsx)
     whitelist = set(master.keys())
+    product_lookup = build_product_lookup(whitelist)
 
-    erp_lot_rows, erp_qty_by_product, dup_excluded_count, lot_tracked_products = load_cleaned_erp(args.cleaned_csv, city, whitelist)
+    erp_lot_rows, erp_qty_by_product, abnormality_excluded_count, lot_tracked_products = load_cleaned_erp(args.cleaned_csv, city, product_lookup)
 
     wb_op = openpyxl.load_workbook(args.opname_xlsx, data_only=True)
     imei_sheet = f"Stock {city} {date} - IMEI"
@@ -320,8 +365,8 @@ def main():
               f"Available sheets: {wb_op.sheetnames}", file=sys.stderr)
         sys.exit(1)
 
-    physical_lot_rows, duplicate_scans = load_physical_imei(wb_op, imei_sheet, whitelist)
-    physical_qty_nonimei = load_physical_non_imei(wb_op, non_imei_sheet, whitelist)
+    physical_lot_rows, duplicate_scans = load_physical_imei(wb_op, imei_sheet, product_lookup)
+    physical_qty_nonimei = load_physical_non_imei(wb_op, non_imei_sheet, product_lookup)
 
     erp_lots = set(erp_lot_rows.keys())
     physical_lots = set(physical_lot_rows.keys())
@@ -386,7 +431,7 @@ def main():
     write_report(output_path, city, date, summary_ctx, product_rows, mismatch_rows)
 
     print(f"City: {city}  Date: {date}")
-    print(f"ERP rows excluded (ERP Duplicate line): {dup_excluded_count}")
+    print(f"ERP rows excluded (abnormality-flagged): {abnormality_excluded_count}")
     print(f"Total IMEIs in ERP: {summary_ctx['total_erp']}")
     print(f"Total IMEIs in Physical: {summary_ctx['total_physical']}")
     print(f"Matched: {summary_ctx['matched']}  ERP-only: {summary_ctx['erp_only']}  Physical-only: {summary_ctx['physical_only']}")
