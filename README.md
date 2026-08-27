@@ -1,6 +1,6 @@
 # McEasy Stock Opname Claude Agents
 
-**Version:** 2.0.0 — see [CHANGELOG.md](CHANGELOG.md)
+**Version:** 2.0.1 — see [CHANGELOG.md](CHANGELOG.md)
 
 Claude Code agents and skills that automate McEasy's stock reconciliation workflow: cleaning raw ERP "Stock Quant" exports for data-quality issues, then reconciling them against physical Stock Opname counts — either per-city (`/stock-opname`) or per-technician (`/stock-opname-teknisi`). Built for ops/inventory teams who need to catch ERP-vs-physical stock mismatches without manual spreadsheet reconciliation.
 

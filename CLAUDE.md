@@ -170,9 +170,14 @@ agent/skill actually does when run.
 - `/stock-opname`'s second step (`@stock-opname-comparator`) reconciles the
   cleaned ERP output against a physical Stock Opname count for one city. Only
   products listed in the Inventory Masterfile (`Category` sheet) are in
-  scope. ERP rows flagged `ERP Duplicate line` are excluded from the ERP
-  "on-hand" side before matching — confirmed against real data that these are
-  phantom double-bookings a physical count won't find. Full logic lives in
+  scope. Any ERP row carrying a non-empty `Abnormality` flag (Owner Mismatch,
+  Negative Qty, Imei Length Difference, Alphanumeric IMEI, Has Special
+  Character, Missing Imei, ERP Duplicate line — not just duplicates) is
+  excluded from the ERP "on-hand" side before matching, for both IMEI-lot
+  matching and the non-IMEI qty sum — confirmed against real SBY 260826 data
+  that a narrower duplicate-only exclusion let other abnormalities (e.g. a
+  Negative Qty/Owner Mismatch line owned by a courier company) distort the
+  non-IMEI qty comparison. Full logic lives in
   `scripts/compare_stock_opname.py` (requires `openpyxl`, see
   `scripts/requirements.txt`).
 
