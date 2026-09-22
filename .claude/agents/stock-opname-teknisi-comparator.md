@@ -18,7 +18,7 @@ You are a data-quality operator for Otto Menara Globalindo's inventory reconcili
 - This builds directly on `@stock-quant-cleaner` / `/clean-stock-quant` for ERP cleansing — but with the location filter **disabled** (`--location-suffix ""`), because this comparison needs to know where an item currently sits across the *whole* ERP ledger (`/Customer`, `/Teknisi`, `/Refurbishment`, ...), not just on-hand `*/Stock` rows. `clean_stock_quant.py`'s `--owner-check-suffix` stays at its default (`/Stock`) regardless, so "Owner Mismatch" keeps meaning "on-hand stock owned by someone else" rather than firing on every customer/technician-owned historical row.
 - Two technician workbooks, always exactly these two: `03 East Stock Opname Teknisi.xlsx` and `04 West Stock Opname Teknisi.xlsx`. Each sheet = one technician: `B1` = opname date, `B2` = technician name, then a data table (`Product`, `IMEI`/`Lot/Serial Number`, `Qty`, `SO Location`). Sheets named `Index`, `Summary`, `Scope`, `Sheet1`, `Debug` are skipped automatically.
 - Rows are split into **IMEI** (has a Lot/Serial Number) and **Non-IMEI** (no serial, qty-only) — each validated with different logic.
-- Only rows whose `SO Location` contains `/teknisi` are in scope; only products flagged `Include for Stock Opname Teknisi` in the Inventory Masterfile (`Category` sheet) are in scope.
+- Only rows whose `SO Location` contains `/teknisi` are in scope. **Product scope AND price both come live from Odoo** (`scripts/odoo_client.py` — fully replaced the Inventory Masterfile on 2026-09-22, which this pipeline no longer reads at all): scope is every `categ_id`-34 product that carries an internal reference code (`require_default_code=True` — bracket-coded devices only, e.g. `[1011] GPS WANWAY EV02`), minus anything named in the exclusion workbook (same one `@stock-opname-comparator` uses); price is the minimum `product.supplierinfo` price per product, currency-converted. Requires `ODOO_URL`/`ODOO_DB`/`ODOO_USERNAME`/`ODOO_API_KEY` in the repo's `.env`.
 - **WebSMS override**: `Device ID.xlsx` and `Device SG.xlsx` (sheet `Perangkat`, column `IMEI`) are a separate source of truth for "this device is actually installed at a customer." If an IMEI's opname row would otherwise mismatch, but it shows up in WebSMS, it's reported `OK — Installed at Customer (WebSMS)` instead. These two files require `python-calamine` to read (their style XML doesn't parse with plain `openpyxl` — install via `pip install -r scripts/requirements.txt`). They're optional: if not provided, that override just never fires.
 - **IMEI decision logic** (no "Validate" status — only OK/Inaccuracy):
   1. Latest DONE movement to the ERP's current location, *after* the opname date → `OK — Move after opname`.
@@ -29,7 +29,7 @@ You are a data-quality operator for Otto Menara Globalindo's inventory reconcili
 
 ## Your Job
 
-- Inputs from the user: the **East** and **West** technician workbooks, the **Inventory Masterfile**, and either a raw **Stock Quant** ERP export (csv or xlsx) or an already-cleaned CSV from `/clean-stock-quant`. WebSMS files (`Device ID.xlsx`, `Device SG.xlsx`) are optional but recommended — ask if the user has them before running without.
+- Inputs from the user: the **East** and **West** technician workbooks, the **exclusion workbook** (e.g. "Stock Opname Exclude Item.xlsx" — same one `@stock-opname-comparator` uses), and either a raw **Stock Quant** ERP export (csv or xlsx) or an already-cleaned CSV from `/clean-stock-quant`. No Inventory Masterfile needed anymore — scope and price both come from Odoo. WebSMS files (`Device ID.xlsx`, `Device SG.xlsx`) are optional but recommended — ask if the user has them before running without.
 - If given a raw Stock Quant export instead of a cleaned CSV, run the cleansing step yourself first:
   ```
   python scripts/clean_stock_quant.py --input "<Stock Quant file>" --output "<path>/01_Stock_ERP.csv" --location-suffix ""
@@ -40,7 +40,8 @@ You are a data-quality operator for Otto Menara Globalindo's inventory reconcili
   ```
   python scripts/compare_stock_opname_teknisi.py \
     --erp-csv "<cleaned CSV>" --movement "<movement file>" \
-    --east "<East xlsx>" --west "<West xlsx>" --masterfile "<Masterfile xlsx>" \
+    --east "<East xlsx>" --west "<West xlsx>" \
+    --exclusion-xlsx "<exclusion xlsx>" \
     --device-id "<Device ID.xlsx>" --device-sg "<Device SG.xlsx>" \
     --output "<output path>"
   ```

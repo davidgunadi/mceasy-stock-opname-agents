@@ -7,6 +7,95 @@ and versioning follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-09-22
+
+### Added
+
+- `scripts/odoo_client.py`: pulls product scope, price, and category live
+  from Odoo (JSON-RPC), used by `@stock-opname-comparator` /
+  `/stock-opname`:
+  - Scope: every `product.template` with `categ_id` in `[34]`, minus
+    anything named in a new user-provided exclusion workbook (single sheet,
+    single "Product" column). Products are matched via `canonical_name()` --
+    Odoo's plain `name` plus a `"[code] "` prefix reconstructed from
+    `default_code` for the ~50 category-34 products that carry one, matching
+    the bracket convention the ERP/physical Stock Opname data (and the old
+    masterfile) already used. Without this, every bracket-coded device
+    silently failed to match (confirmed: 0/19 physical IMEI-sheet products
+    matched before the fix, 17/19 after -- the other 2 are legitimately
+    excluded per the exclusion sheet).
+  - Price: the minimum `product.supplierinfo` price per product, converted
+    to IDR (`USD` x16000, `CNY` x2500 -- confirmed both appear in real
+    supplierinfo data; any other currency is skipped with a warning rather
+    than silently treated as IDR). A product with no usable supplierinfo
+    price defaults to price 0.
+  - Category / `New Group - July 25`: both get the same price-tier
+    (`C` <=150,000, `B` 150,001-600,000, `A` >=600,001 IDR, including the
+    price-0 default above) -- **placeholder bands from the business owner,
+    explicitly confirmed changeable, not final**.
+  - `fetch_in_scope_products(..., require_default_code=True)`: a narrower
+    scope variant used by `@stock-opname-teknisi-comparator` /
+    `/stock-opname-teknisi` -- only products carrying an internal reference
+    code (bracket-coded devices), minus the same exclusion workbook. Per the
+    business owner, the teknisi report only tracks serialized/
+    internal-reference devices at the technician level, not bulk/accessory
+    items. Confirmed against real 260826 data: 25 in-scope products, all
+    2252 resulting Detail rows are IMEI rows (zero Non-IMEI), and every row
+    resolved a price with none falling back to 0.
+- `.env.example`: template for the four required `ODOO_URL`/`ODOO_DB`/
+  `ODOO_USERNAME`/`ODOO_API_KEY` credentials. `.env` itself (real
+  credentials) is gitignored.
+- `scripts/requirements.txt`: added `python-dotenv` (loads `.env` for
+  `odoo_client.py`).
+
+### Changed
+
+- `scripts/compare_stock_opname.py`: `--masterfile-xlsx` replaced by
+  `--exclusion-xlsx` -- the Inventory Masterfile is no longer read at all;
+  product scope/price/category come from `odoo_client.py` instead (see
+  above). **Breaking**: any existing invocation passing `--masterfile-xlsx`
+  now fails.
+- `scripts/compare_stock_opname_teknisi.py`: **the Inventory Masterfile is no
+  longer read by this script at all** -- `--masterfile` is removed. Both
+  product scope (previously `build_scope`, driven by the Masterfile's
+  `Include for Stock Opname Teknisi` flag) and price (previously
+  `load_master_prices`, the Masterfile's "Price in IDR" column) are replaced
+  by a single `build_scope_and_prices_from_odoo`, using `odoo_client.py`'s
+  `require_default_code=True` scope plus a new required `--exclusion-xlsx`
+  (same exclusion workbook `/stock-opname` uses). Switching price sources
+  changed real numbers on the same 260826 data (Total Discrepancy Value
+  238,938,943 -> 266,484,470 IDR) -- expected, Odoo's live supplierinfo
+  prices genuinely differ from the old masterfile's static column, not a
+  bug. **Breaking**: `--masterfile` no longer exists and `--exclusion-xlsx`
+  is now required; any existing invocation using the old flags now fails.
+- `CLAUDE.md`, `README.md`, `.claude/agents/stock-opname-comparator.md`,
+  `.claude/agents/stock-opname-teknisi-comparator.md`,
+  `.claude/skills/stock-opname/SKILL.md`,
+  `.claude/skills/stock-opname-teknisi/SKILL.md`: updated to describe the
+  Odoo-based scope/price/category source and the new `--exclusion-xlsx`
+  contract -- the Inventory Masterfile is no longer used anywhere in either
+  pipeline.
+
+## [2.1.0] - 2026-09-22
+
+### Added
+
+- `scripts/compare_stock_opname.py`: two new report sheets, `Aging Report`
+  and `Aging Report Detail`, used by `@stock-opname-comparator` /
+  `/stock-opname`. Age is the whole number of months from each ERP row's
+  `Lot Created Date` to the opname date (day-of-month aware), bucketed into
+  `< 3 Mo / 3-6 Mo / 6-9 Mo / 9-12 Mo / > 12 Mo`; `Aging Report` sums qty per
+  Product × bucket, `Aging Report Detail` lists one row per lot. Built from
+  the same scoped, non-abnormal ERP rows already used by the rest of the
+  report. Ported from a business-owner-provided reference notebook
+  (`v2_stock_opname.ipynb`) where this logic existed in full (including the
+  color-coded bucket formatting) but was commented out and never wired up —
+  the pipeline had no aging capability until now.
+- `CLAUDE.md`: documented the Aging Report / Aging Report Detail sheets under
+  "Stock Quant cleaning domain" and updated the agent table, pipeline
+  diagram, agent definition, and skill description to reflect the report's
+  new 5-sheet shape (was 3).
+
 ## [2.0.1] - 2026-08-26
 
 ### Changed

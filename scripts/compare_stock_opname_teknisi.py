@@ -28,6 +28,25 @@ deliberately while porting into this repo:
     (erp_qty/status) and would crash. It now reports
     "Inaccuracy — Missing SO Location", mirroring the equivalent guard
     already present on the IMEI side.
+  - Discrepancies are priced from Odoo now, not a local Inventory Masterfile
+    (changed 2026-09-22 -- the Masterfile is no longer read by this script
+    at all). Detail (IMEI) rows get the unit price if Inaccuracy, else 0
+    (one IMEI = one unit). Detail (Non-IMEI) rows get
+    (Qty - ERP qty at SO) x price, signed. Summary sheets (Overall / by
+    Tech) roll these up as a net signed "Total Discrepancy Value (IDR)" per
+    group — same net-sum convention as compare_stock_opname.py's
+    product-level rollup, not an absolute-value total.
+  - Product SCOPE and PRICE both come live from Odoo (`odoo_client.py`, same
+    source `compare_stock_opname.py` uses for /stock-opname). Scope is
+    `odoo_client.fetch_in_scope_products(..., require_default_code=True)`:
+    every Odoo product in categ_id 34 that carries an internal reference
+    code (bracket-coded devices only, e.g. "[1011] GPS WANWAY EV02"), minus
+    anything named in a user-provided exclusion workbook (the same one
+    /stock-opname uses). Per the business owner: this report only tracks
+    serialized/internal-reference devices at the technician level, not
+    bulk/accessory items. Price is the minimum `product.supplierinfo` price
+    per product, currency-converted, same as /stock-opname -- see
+    `build_scope_and_prices_from_odoo`.
 
 IMEI (serialized) rows: use the LATEST DONE move on or after SO Date (a
 same-day move counts as evidence — dates are compared date-only, so same-day
@@ -38,13 +57,17 @@ Date" to break the tie, the row with Quantity > 0 wins over zero-quantity
 Non-IMEI (non-serialized) rows: compare per (Technician x Location x Product);
 skip '/Customer' entirely.
 
+Requires ODOO_URL/ODOO_DB/ODOO_USERNAME/ODOO_API_KEY (see odoo_client.py and
+the repo's .env) for the scope + price lookup -- the Inventory Masterfile is
+no longer read by this script at all (2026-09-22).
+
 Usage:
     python compare_stock_opname_teknisi.py \\
         --erp-csv "01 Stock ERP.csv" \\
         --movement "02 Stock Movement.xlsx" \\
         --east "03 East Stock Opname Teknisi.xlsx" \\
         --west "04 West Stock Opname Teknisi.xlsx" \\
-        --masterfile "Inventory Masterfile.xlsx" \\
+        --exclusion-xlsx "Stock Opname Exclude Item.xlsx" \\
         --device-id "Device ID.xlsx" --device-sg "Device SG.xlsx" \\
         --output "Stock Opname Teknisi_260812.xlsx"
 """
@@ -52,12 +75,13 @@ Usage:
 import argparse
 import re
 import sys
-import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import pandas as pd
+
+import odoo_client
 
 try:
     import openpyxl  # noqa: F401
@@ -77,7 +101,7 @@ for _stream in (sys.stdout, sys.stderr):
 # =============================
 # CONFIG
 # =============================
-STRICT_SCOPE = True  # True: restrict products using Masterfile['Include for Stock Opname Teknisi']
+STRICT_SCOPE = True  # True: restrict products to the Odoo-derived in-scope set (see build_scope_from_odoo)
 
 
 # =============================
@@ -133,27 +157,39 @@ def make_unique_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # =============================
-# SCOPE LOADER (Masterfile)
+# SCOPE + PRICE LOADER (Odoo)
 # =============================
-def build_scope(masterfile: Path):
-    """Read Inventory Masterfile.xlsx -> sheet 'Category' and build a set of
-    product codes in scope. If 'Include for Stock Opname Teknisi' column is
-    present and STRICT_SCOPE=True, filter by that flag."""
-    log("Loading Masterfile scope…")
-    cat = pd.read_excel(masterfile, sheet_name="Category")
-    if "Product" not in cat.columns:
-        raise RuntimeError("[MASTERFILE] 'Category' sheet missing 'Product' column.")
-    prod_upper = cat["Product"].astype(str).str.strip().str.upper()
-    if "Include for Stock Opname Teknisi" in cat.columns and STRICT_SCOPE:
-        mask = cat["Include for Stock Opname Teknisi"].fillna(False) == True  # noqa: E712
-        scope = set(prod_upper[mask].tolist())
-        log(f"→ STRICT_SCOPE active with 'Include for Stock Opname Teknisi' ({len(scope)} products).")
-    else:
-        if STRICT_SCOPE:
-            warnings.warn("[MASTERFILE] 'Include for Stock Opname Teknisi' not found — defaulting to all products in-scope.")
-        scope = set(prod_upper.tolist())
-        log(f"→ STRICT_SCOPE defaulted to ALL products ({len(scope)}).")
-    return scope
+def build_scope_and_prices_from_odoo(exclusion_xlsx: Path):
+    """Replaces the old Masterfile-driven build_scope() + load_master_prices()
+    (2026-09-22): the Inventory Masterfile is no longer read by this script
+    at all -- both scope and price now come live from Odoo via odoo_client.py,
+    same source compare_stock_opname.py uses for /stock-opname, but scope is
+    restricted to products carrying an internal reference code
+    (require_default_code=True), per the business owner: the teknisi report
+    only tracks bracket-coded/serialized devices at the technician level, not
+    bulk/accessory items. Also excludes anything named in the same exclusion
+    workbook /stock-opname uses.
+
+    Returns (scope, prices):
+      scope  -- uppercase-normalized set of canonical_name() strings (e.g.
+                "[1011] GPS WANWAY EV02"), matching this script's existing
+                .str.upper() normalization of the Product column everywhere
+                else (load_erp_quant, load_teknisi_all).
+      prices -- {canonical_name.upper(): price_idr} -- the minimum
+                product.supplierinfo price per product, currency-converted;
+                0 for a product with no usable supplierinfo price (same
+                fallback convention as the rest of this pipeline)."""
+    log("Loading in-scope product list + prices from Odoo…")
+    records = odoo_client.fetch_in_scope_products(str(exclusion_xlsx), require_default_code=True)
+    price_by_tmpl_id = odoo_client.fetch_price_by_tmpl_ids([r["id"] for r in records])
+    scope = set()
+    prices = {}
+    for r in records:
+        key = r["canonical_name"].strip().upper()
+        scope.add(key)
+        prices[key] = price_by_tmpl_id.get(r["id"]) or 0
+    log(f"→ Odoo scope (internal-reference products only, minus exclusion sheet): {len(scope)} products, prices loaded.")
+    return scope, prices
 
 
 # =============================
@@ -631,6 +667,7 @@ def imei_kpi(df: pd.DataFrame) -> pd.DataFrame:
 
     total_ok = ok_match + ok_move + ok_websms
     accuracy_pct = (total_ok / total) if total > 0 else 0.0
+    total_discrepancy_value = df["Discrepancy Value (IDR)"].sum() if "Discrepancy Value (IDR)" in df.columns else 0.0
 
     return pd.DataFrame([{
         "Total": total,
@@ -643,6 +680,7 @@ def imei_kpi(df: pd.DataFrame) -> pd.DataFrame:
         "Missing IMEI Input": missing_imei,
         "Check & resolve abnormality": abnormal,
         "Accuracy %": accuracy_pct,
+        "Total Discrepancy Value (IDR)": total_discrepancy_value,
     }])
 
 
@@ -700,11 +738,11 @@ def export_excel(out_path: Path,
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with pd.ExcelWriter(out_path, engine="xlsxwriter", datetime_format="yyyy-mm-dd", date_format="yyyy-mm-dd") as writer:
         (detail_imei if not detail_imei.empty else pd.DataFrame(
-            columns=["technician_sheet", "technician", "opname_date", "Product", "Lot/Serial Number", "SO Location", "Qty", "status"])
+            columns=["technician_sheet", "technician", "opname_date", "Product", "Lot/Serial Number", "SO Location", "Qty", "status", "Price in IDR", "Discrepancy Value (IDR)"])
         ).to_excel(writer, sheet_name="Detail (IMEI)", index=False)
 
         (detail_non if not detail_non.empty else pd.DataFrame(
-            columns=["technician_sheet", "technician", "Product", "SO Location", "Qty", "ERP qty at SO", "status"])
+            columns=["technician_sheet", "technician", "Product", "SO Location", "Qty", "ERP qty at SO", "status", "Price in IDR", "Discrepancy Value (IDR)"])
         ).to_excel(writer, sheet_name="Detail (Non-IMEI)", index=False)
 
         imei_overall.to_excel(writer, sheet_name="Summary IMEI Overall", index=False)
@@ -731,7 +769,7 @@ def parse_args():
     p.add_argument("--movement", required=True, help="Stock Movement export (.csv or .xlsx)")
     p.add_argument("--east", required=True, help="'03 East Stock Opname Teknisi.xlsx'")
     p.add_argument("--west", required=True, help="'04 West Stock Opname Teknisi.xlsx'")
-    p.add_argument("--masterfile", required=True, help="Inventory Masterfile.xlsx")
+    p.add_argument("--exclusion-xlsx", required=True, help="Exclusion workbook (same one /stock-opname uses -- single 'Product' column of names to drop from the Odoo-derived, internal-reference-only scope). Scope AND price both come from Odoo now -- no Inventory Masterfile input.")
     p.add_argument("--device-id", default=None, help="Device ID.xlsx (WebSMS, optional)")
     p.add_argument("--device-sg", default=None, help="Device SG.xlsx (WebSMS, optional)")
     p.add_argument("--output", required=True, help="Path to write the report .xlsx")
@@ -748,7 +786,7 @@ def main():
     movement_path = Path(args.movement)
     east_path = Path(args.east)
     west_path = Path(args.west)
-    master_file = Path(args.masterfile)
+    exclusion_xlsx = Path(args.exclusion_xlsx)
     device_id = Path(args.device_id) if args.device_id else None
     device_sg = Path(args.device_sg) if args.device_sg else None
     out_xlsx = Path(args.output)
@@ -757,10 +795,10 @@ def main():
     log(f"Movement: {movement_path}")
     log(f"East: {east_path}")
     log(f"West: {west_path}")
-    log(f"Masterfile: {master_file}")
+    log(f"Exclusion workbook: {exclusion_xlsx}")
     log(f"Output: {out_xlsx}")
 
-    in_scope = build_scope(master_file)
+    in_scope, product_prices = build_scope_and_prices_from_odoo(exclusion_xlsx)
 
     erp = load_erp_quant(erp_csv, in_scope)
     moves = load_moves(movement_path)
@@ -779,6 +817,11 @@ def main():
     if not imei_rows.empty:
         for _, r in imei_rows.iterrows():
             status = imei_status(r, idx_imei, websms_imeis)
+            price = product_prices.get(str(r.get("Product", "")).strip().upper(), 0)
+            # One IMEI row = one unit: any Inaccuracy status means exactly one
+            # unit is unaccounted for, so the discrepancy value is the unit
+            # price itself (0 for OK statuses).
+            discrepancy_value = price if status.startswith("Inaccuracy") else 0
             imei_out_rows.append({
                 "technician_sheet": r.get("technician_sheet"),
                 "technician": r.get("technician"),
@@ -788,6 +831,8 @@ def main():
                 "SO Location": r.get("SO Location"),
                 "Qty": r.get("Qty", 0),
                 "status": status,
+                "Price in IDR": price,
+                "Discrepancy Value (IDR)": discrepancy_value,
                 "area": r.get("area"),
             })
 
@@ -806,12 +851,12 @@ def main():
         imei_overall = pd.DataFrame([{
             "Total": 0, "OK (ERP match)": 0, "OK (Move after opname)": 0, "OK (WebSMS)": 0,
             "Check WO": 0, "Location mismatch": 0, "Missing in ERP": 0, "Missing IMEI Input": 0,
-            "Check & resolve abnormality": 0, "Accuracy %": 0.0,
+            "Check & resolve abnormality": 0, "Accuracy %": 0.0, "Total Discrepancy Value (IDR)": 0.0,
         }])
         imei_bytech = pd.DataFrame(columns=[
             "technician", "Total", "OK (ERP match)", "OK (Move after opname)", "OK (WebSMS)",
             "Check WO", "Location mismatch", "Missing in ERP", "Missing IMEI Input",
-            "Check & resolve abnormality", "Accuracy %",
+            "Check & resolve abnormality", "Accuracy %", "Total Discrepancy Value (IDR)",
         ])
     log("→ IMEI KPIs ready.")
 
@@ -823,6 +868,11 @@ def main():
             if res is None:
                 continue
             status, erp_qty = res
+            price = product_prices.get(str(r.get("Product", "")).strip().upper(), 0)
+            qty = float(r.get("Qty", 0) or 0)
+            # Signed: positive = technician counted more than ERP shows at
+            # this Tech x Location x Product pairing, negative = less.
+            discrepancy_value = (qty - erp_qty) * price
             non_out_rows.append({
                 "technician_sheet": r.get("technician_sheet"),
                 "technician": r.get("technician"),
@@ -831,6 +881,8 @@ def main():
                 "Qty": r.get("Qty", 0),
                 "ERP qty at SO": erp_qty,
                 "status": status,
+                "Price in IDR": price,
+                "Discrepancy Value (IDR)": discrepancy_value,
                 "area": r.get("area"),
             })
 
@@ -841,11 +893,12 @@ def main():
     if not detail_non.empty:
         by = detail_non.groupby("technician", dropna=False).agg(
             ok=("status", lambda s: (s == "OK — Non-IMEI").sum()),
-            total=("status", "count")
+            total=("status", "count"),
+            **{"Total Discrepancy Value (IDR)": ("Discrepancy Value (IDR)", "sum")},
         ).reset_index()
         by["% Accuracy"] = by.apply(lambda r: (r["ok"] / r["total"]) if r["total"] else 0.0, axis=1)
     else:
-        by = pd.DataFrame(columns=["technician", "ok", "total", "% Accuracy"])
+        by = pd.DataFrame(columns=["technician", "ok", "total", "% Accuracy", "Total Discrepancy Value (IDR)"])
     log("→ Non-IMEI KPIs ready.")
 
     log(f"Exporting Excel → {out_xlsx}")

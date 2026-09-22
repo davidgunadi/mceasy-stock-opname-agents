@@ -3,3 +3,4 @@ openpyxl>=3.1
 xlsxwriter>=3.1
 pandas>=2.0
 python-calamine>=0.3  # only needed for /stock-opname-teknisi's WebSMS device-list files
+python-dotenv>=1.0  # only needed for odoo_client.py, to load ODOO_* vars from .env
