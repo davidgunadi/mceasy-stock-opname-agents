@@ -2,3 +2,4 @@
 .obsidian/
 .claude/settings.local.json
 outputs
+.env

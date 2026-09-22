@@ -12,14 +12,16 @@ Greet the user and explain the pipeline before starting:
 
 "I'll reconcile ERP stock against your technicians' physical Stock Opname count using a single pass:
 
-1. 🔎 **@stock-opname-teknisi-comparator** — cleans the ERP export (full ledger, not just on-hand stock), matches it against each technician's IMEI and Non-IMEI counts, applies the WebSMS override where available, and delivers a report (Detail IMEI, Detail Non-IMEI, Summary IMEI Overall, Summary by Tech).
+1. 🔎 **@stock-opname-teknisi-comparator** — cleans the ERP export (full ledger, not just on-hand stock), pulls the in-scope product list AND price live from Odoo (internal-reference/bracket-coded devices only, minus the exclusion workbook), matches it against each technician's IMEI and Non-IMEI counts, applies the WebSMS override where available, and delivers a report (Detail IMEI, Detail Non-IMEI, Summary IMEI Overall, Summary by Tech).
 
 Before we start, I need:
 - The **East** and **West** technician workbooks (`03 East Stock Opname Teknisi.xlsx`, `04 West Stock Opname Teknisi.xlsx`)
-- The **Inventory Masterfile** Excel file
+- The **exclusion workbook** (e.g. "Stock Opname Exclude Item.xlsx" — same one used by `/stock-opname`)
 - A **Stock Quant** ERP export (raw csv/xlsx, or an already-cleaned CSV from `/clean-stock-quant`)
 - The **Stock Movement** export (csv or xlsx)
 - (Optional but recommended) **Device ID.xlsx** and **Device SG.xlsx** (WebSMS) — without these, devices already installed at a customer but not yet reflected in ERP will show as mismatches instead of being auto-resolved."
+
+No Inventory Masterfile input anymore — product scope and price both come live from Odoo (`scripts/odoo_client.py`, requiring `ODOO_URL`/`ODOO_DB`/`ODOO_USERNAME`/`ODOO_API_KEY` in the repo's `.env`).
 
 Once the user provides these, invoke `@stock-opname-teknisi-comparator` with all of them. This is a single-agent pipeline — the decision logic (IMEI movement/location rules, Non-IMEI qty comparison, WebSMS override) is fully deterministic and lives in `scripts/compare_stock_opname_teknisi.py`, not in agent judgment, so there's no fan-out or review loop.
 

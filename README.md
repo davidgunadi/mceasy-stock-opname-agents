@@ -1,6 +1,6 @@
 # McEasy Stock Opname Claude Agents
 
-**Version:** 2.0.1 — see [CHANGELOG.md](CHANGELOG.md)
+**Version:** 3.0.0 — see [CHANGELOG.md](CHANGELOG.md)
 
 Claude Code agents and skills that automate McEasy's stock reconciliation workflow: cleaning raw ERP "Stock Quant" exports for data-quality issues, then reconciling them against physical Stock Opname counts — either per-city (`/stock-opname`) or per-technician (`/stock-opname-teknisi`). Built for ops/inventory teams who need to catch ERP-vs-physical stock mismatches without manual spreadsheet reconciliation.
 
@@ -31,7 +31,7 @@ data and reports where they disagree.
 | Physical count is done by | Warehouse staff, per city | Field technicians, individually |
 | Scope | On-hand stock only (`<City>/Stock`) | Full ledger — includes stock currently checked out to a customer or technician |
 | Special handling | Excludes ERP "duplicate line" phantom bookings | Uses stock movement history + WebSMS device records to explain apparent mismatches (e.g. a technician installed a unit at a customer's site the same day) |
-| Output | Summary / Product Summary / IMEI Mismatch | Detail IMEI / Detail Non-IMEI / Summary by Technician |
+| Output | Summary / Product Summary / IMEI Mismatch / Aging Report / Aging Report Detail | Detail IMEI / Detail Non-IMEI / Summary by Technician |
 
 ### Key terms
 
@@ -50,6 +50,10 @@ data and reports where they disagree.
 - **WebSMS override** — a separate source of truth (device management
   system) used to confirm a unit is genuinely installed at a customer,
   overriding an otherwise-flagged mismatch.
+- **Exclusion workbook** — replaces the old Inventory Masterfile as the
+  product scope source for `/stock-opname`: a single-sheet, single-column
+  list of product names to drop from the comparison. Scope, price, and
+  category now come live from Odoo instead (see `scripts/odoo_client.py`).
 
 ---
 
@@ -100,6 +104,22 @@ git clone https://github.com/[your-org]/[your-repo].git
 
 > **Note:** The `.claude/` folder is hidden by default. On Mac press `Cmd + Shift + .` to show hidden files in Finder.
 
+### Odoo credentials
+
+`/stock-opname` pulls product scope, price, and category live from Odoo
+(`scripts/odoo_client.py`), so it needs API access:
+
+1. Copy `.env.example` to `.env` in the repo root.
+2. Fill in `ODOO_URL`, `ODOO_DB`, `ODOO_USERNAME`, and `ODOO_API_KEY` (ask
+   whoever manages your Odoo instance for these — `ODOO_API_KEY` comes from
+   Settings → Users & Companies → Users → your user → Account Security →
+   API Keys, not your login password).
+3. `.env` is gitignored — never commit it or paste real credentials into
+   chat with Claude.
+
+`python-dotenv` (in `scripts/requirements.txt`) loads `.env` automatically;
+without it, set the same variables as real environment variables instead.
+
 ---
 
 ## How to use
@@ -111,10 +131,11 @@ Type the slash command in Claude Code:
 ```
 
 - **Input:** a raw Stock Quant CSV export, the city, a physical Stock Opname
-  xlsx, and the Inventory Masterfile xlsx.
-- **Output:** the cleaned/annotated Stock Quant CSV, plus a 3-sheet Excel
-  report (Summary, Product Summary, IMEI Mismatch) — both saved next to your
-  input files.
+  xlsx, and an exclusion xlsx (products to drop from scope — product scope,
+  price, and category now come live from Odoo; see "Odoo credentials" above).
+- **Output:** the cleaned/annotated Stock Quant CSV, plus a 5-sheet Excel
+  report (Summary, Product Summary, IMEI Mismatch, Aging Report, Aging Report
+  Detail) — both saved next to your input files.
 
 or, for a technician-level physical count instead of a per-city one:
 
@@ -122,9 +143,11 @@ or, for a technician-level physical count instead of a per-city one:
 /stock-opname-teknisi
 ```
 
-- **Input:** East + West technician Stock Opname workbooks, the Inventory
-  Masterfile, a Stock Quant export (raw or already cleaned), the Stock
-  Movement export, and optionally the WebSMS Device ID/SG files.
+- **Input:** East + West technician Stock Opname workbooks, the same
+  exclusion xlsx `/stock-opname` uses, a Stock Quant export (raw or already
+  cleaned), the Stock Movement export, and optionally the WebSMS Device
+  ID/SG files. No Inventory Masterfile needed — product scope and price both
+  come live from Odoo.
 - **Output:** a 4-sheet Excel report (Detail IMEI, Detail Non-IMEI, Summary
   IMEI Overall, Summary by Tech), saved next to your movement/opname files.
 
@@ -139,9 +162,11 @@ your-repo/
 ├── CLAUDE.md                          # Project instructions — agents read this for context
 ├── README.md                          # This file
 ├── .gitignore
+├── .env.example                       # Template for Odoo credentials — copy to .env and fill in
 ├── outputs/                           # All generated files go here
 │   └── .gitkeep
 ├── scripts/                           # Scripts invoked by agents while running
+│   ├── odoo_client.py                 # Pulls product scope/price/category live from Odoo
 │   └── .gitkeep
 └── .claude/
     ├── settings.json                  # Permissions (e.g. allow WebSearch)
